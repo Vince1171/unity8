@@ -16,16 +16,16 @@
 
 #include "windowstatestorage.h"
 
-#include <QtConcurrent>
 #include <QDebug>
-#include <QFutureSynchronizer>
+#include <QDir>
+#include <QMetaObject>
+#include <QObject>
 #include <QSqlQuery>
 #include <QSqlError>
 #include <QSqlResult>
+#include <QStandardPaths>
 #include <QRect>
 #include <unity/shell/application/ApplicationInfoInterface.h>
-
-QMutex WindowStateStorage::s_mutex;
 
 inline QString sanitiseString(QString string) {
     return string.remove(QLatin1Char('\"'))
@@ -33,26 +33,84 @@ inline QString sanitiseString(QString string) {
                  .remove(QLatin1Char('\\'));
 }
 
-WindowStateStorage::WindowStateStorage(QObject *parent):
+class AsyncQuery: public QObject
+{
+    Q_OBJECT
+
+public:
+    AsyncQuery(const QString& dbName)
+    {
+        m_db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("WindowStateStorageMain"));
+        if (dbName == nullptr) {
+            const QString dbPath = QStandardPaths::writableLocation(QStandardPaths::GenericCacheLocation) + QStringLiteral("/unity8/");
+            QDir dir;
+            dir.mkpath(dbPath);
+            m_db.setDatabaseName(dbPath + "windowstatestorage.sqlite");
+        } else {
+          m_db.setDatabaseName(dbName);
+        }
+
+        initdb();
+    }
+
+    ~AsyncQuery()
+    {
+        QSqlDatabase::removeDatabase(QStringLiteral("WindowStateStorageMain"));
+    }
+
+private:
+    void initdb()
+    {
+        m_db.open();
+        if (!m_db.open()) {
+            qWarning() << "Error opening state database:" << m_db.lastError().driverText() << m_db.lastError().databaseText();
+            return;
+        }
+
+        if (!m_db.tables().contains(QStringLiteral("geometry"))) {
+            QSqlQuery query;
+            query.exec(QStringLiteral("CREATE TABLE geometry(windowId TEXT UNIQUE, x INTEGER, y INTEGER, width INTEGER, height INTEGER);"));
+        }
+
+        if (!m_db.tables().contains(QStringLiteral("state"))) {
+            QSqlQuery query;
+            query.exec(QStringLiteral("CREATE TABLE state(windowId TEXT UNIQUE, state INTEGER);"));
+        }
+
+        if (!m_db.tables().contains(QStringLiteral("stage"))) {
+            QSqlQuery query;
+            query.exec(QStringLiteral("CREATE TABLE stage(appId TEXT UNIQUE, stage INTEGER);"));
+        }
+    }
+
+public Q_SLOTS:
+    QSqlQuery execute(const QString& queryString)
+    {
+        QSqlQuery query(m_db);
+        auto ok = query.exec(queryString);
+        if (!ok) {
+          qWarning() << "Error executing query" << queryString
+                     << "Driver error:" << query.lastError().driverText()
+                     << "Database error:" << query.lastError().databaseText();
+        }
+        return query;
+    }
+
+private:
+    QSqlDatabase m_db;
+};
+
+WindowStateStorage::WindowStateStorage(const QString& dbName, QObject *parent):
     QObject(parent)
 {
-    const QString dbPath = QStandardPaths::writableLocation(QStandardPaths::GenericCacheLocation) + QStringLiteral("/unity8/");
-    m_db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("WindowStateStorageMain"));
-    QDir dir;
-    dir.mkpath(dbPath);
-    m_db.setDatabaseName(dbPath + "windowstatestorage.sqlite");
-    initdb();
+    m_asyncQuery = new AsyncQuery(dbName);
+    connect(this, &WindowStateStorage::executeAsyncQuery, static_cast<AsyncQuery*>(m_asyncQuery), &AsyncQuery::execute);
 }
 
 WindowStateStorage::~WindowStateStorage()
 {
-    QFutureSynchronizer<void> futureSync;
-    for (int i = 0; i < m_asyncQueries.count(); ++i) {
-        futureSync.addFuture(m_asyncQueries[i]);
-    }
-    futureSync.waitForFinished();
-    m_db.close();
-    QSqlDatabase::removeDatabase(QStringLiteral("WindowStateStorageMain"));
+    m_thread.quit();
+    m_thread.wait();
 }
 
 void WindowStateStorage::saveState(const QString &windowId, WindowStateStorage::WindowState state)
@@ -61,7 +119,7 @@ void WindowStateStorage::saveState(const QString &windowId, WindowStateStorage::
             .arg(sanitiseString(windowId))
             .arg((int)state);
 
-    saveValue(queryString);
+    executeAsyncQuery(queryString);
 }
 
 WindowStateStorage::WindowState WindowStateStorage::getState(const QString &windowId, WindowStateStorage::WindowState defaultValue) const
@@ -86,7 +144,7 @@ void WindowStateStorage::saveGeometry(const QString &windowId, const QRect &rect
             .arg(rect.width())
             .arg(rect.height());
 
-    saveValue(queryString);
+    executeAsyncQuery(queryString);
 }
 
 void WindowStateStorage::saveStage(const QString &appId, int stage)
@@ -95,7 +153,7 @@ void WindowStateStorage::saveStage(const QString &appId, int stage)
             .arg(sanitiseString(appId))
             .arg(stage);
 
-    saveValue(queryString);
+    executeAsyncQuery(queryString);
 }
 
 int WindowStateStorage::getStage(const QString &appId, int defaultValue) const
@@ -109,26 +167,6 @@ int WindowStateStorage::getStage(const QString &appId, int defaultValue) const
         return defaultValue;
     }
     return query.value("stage").toInt();
-}
-
-void WindowStateStorage::executeAsyncQuery(const QString &queryString, const QString &dbPath)
-{
-    {
-        QSqlDatabase connection = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("WindowStateStorageOther"));
-        connection.setDatabaseName(dbPath);
-        connection.open();
-        QMutexLocker l(&s_mutex);
-        QSqlQuery query(connection);
-
-        bool ok = query.exec(queryString);
-        if (!ok) {
-            qWarning() << "Error executing query" << queryString
-                    << "Driver error:" << query.lastError().driverText()
-                    << "Database error:" << query.lastError().databaseText();
-        }
-        connection.close();
-    }
-    QSqlDatabase::removeDatabase(QStringLiteral("WindowStateStorageOther"));
 }
 
 QRect WindowStateStorage::getGeometry(const QString &windowId, const QRect &defaultValue) const
@@ -152,56 +190,13 @@ QRect WindowStateStorage::getGeometry(const QString &windowId, const QRect &defa
     return defaultValue;
 }
 
-void WindowStateStorage::initdb()
-{
-    m_db.open();
-    if (!m_db.open()) {
-        qWarning() << "Error opening state database:" << m_db.lastError().driverText() << m_db.lastError().databaseText();
-        return;
-    }
-
-    if (!m_db.tables().contains(QStringLiteral("geometry"))) {
-        QSqlQuery query;
-        query.exec(QStringLiteral("CREATE TABLE geometry(windowId TEXT UNIQUE, x INTEGER, y INTEGER, width INTEGER, height INTEGER);"));
-    }
-
-    if (!m_db.tables().contains(QStringLiteral("state"))) {
-        QSqlQuery query;
-        query.exec(QStringLiteral("CREATE TABLE state(windowId TEXT UNIQUE, state INTEGER);"));
-    }
-
-    if (!m_db.tables().contains(QStringLiteral("stage"))) {
-        QSqlQuery query;
-        query.exec(QStringLiteral("CREATE TABLE stage(appId TEXT UNIQUE, stage INTEGER);"));
-    }
-}
-
-void WindowStateStorage::saveValue(const QString &queryString)
-{
-    QMutexLocker mutexLocker(&s_mutex);
-
-    QFuture<void> future = QtConcurrent::run(&m_threadPool, executeAsyncQuery, queryString, m_db.databaseName());
-    m_asyncQueries.append(future);
-
-    QFutureWatcher<void> *futureWatcher = new QFutureWatcher<void>();
-    futureWatcher->setFuture(future);
-    connect(futureWatcher, &QFutureWatcher<void>::finished,
-            this,
-            [=](){ m_asyncQueries.removeAll(futureWatcher->future());
-        futureWatcher->deleteLater(); });
-}
-
 QSqlQuery WindowStateStorage::getValue(const QString &queryString) const
 {
-    QMutexLocker l(&s_mutex);
-    QSqlQuery query(m_db);
-
-    bool ok = query.exec(queryString);
-    if (!ok) {
-        qWarning() << "Error retrieving database query:" << queryString
-                   << "Driver error:" << query.lastError().driverText()
-                   << "Database error:" << query.lastError().databaseText();
-    }
+   QSqlQuery query;
+   QMetaObject::invokeMethod(static_cast<AsyncQuery*>(m_asyncQuery), "execute", Qt::DirectConnection,
+                             Q_RETURN_ARG(QSqlQuery, query),
+                             Q_ARG(const QString&, queryString)
+                             );
     return query;
 }
 
@@ -227,3 +222,5 @@ Mir::State WindowStateStorage::toMirState(WindowState state) const
             return Mir::RestoredState;
     }
 }
+
+#include "windowstatestorage.moc"

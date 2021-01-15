@@ -18,7 +18,7 @@
 #include <QSqlDatabase>
 #include <QMutex>
 #include <QFuture>
-#include <QThreadPool>
+#include <QThread>
 
 // unity-api
 #include <unity/shell/application/Mir.h>
@@ -46,7 +46,7 @@ public:
     Q_DECLARE_FLAGS(WindowStates, WindowState)
     Q_FLAG(WindowStates)
 
-    WindowStateStorage(QObject *parent = nullptr);
+    WindowStateStorage(const QString& dbName = nullptr, QObject *parent = nullptr);
     virtual ~WindowStateStorage();
 
     Q_INVOKABLE void saveState(const QString &windowId, WindowState state);
@@ -60,18 +60,13 @@ public:
 
     Q_INVOKABLE Mir::State toMirState(WindowState state) const;
 
-private:
-    void initdb();
+Q_SIGNALS:
+    void executeAsyncQuery(const QString &queryString);
 
-    void saveValue(const QString &queryString);
+private:
     QSqlQuery getValue(const QString &queryString) const;
 
-    static void executeAsyncQuery(const QString &queryString, const QString &dbPath);
-    static QMutex s_mutex;
+    QThread m_thread;
 
-    // NB: This is accessed from threads. Make sure to mutex it.
-    QSqlDatabase m_db;
-
-    QList<QFuture<void>> m_asyncQueries;
-    QThreadPool m_threadPool;
+    void *m_asyncQuery;
 };
