@@ -66,7 +66,7 @@ private:
     void saveValue(const QString &queryString);
     QSqlQuery getValue(const QString &queryString) const;
 
-    static void executeAsyncQuery(const QString &queryString);
+    static void executeAsyncQuery(const QString &queryString, const QString &dbPath);
     static QMutex s_mutex;
 
     // NB: This is accessed from threads. Make sure to mutex it.

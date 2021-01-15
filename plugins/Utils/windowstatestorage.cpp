@@ -37,7 +37,7 @@ WindowStateStorage::WindowStateStorage(QObject *parent):
     QObject(parent)
 {
     const QString dbPath = QStandardPaths::writableLocation(QStandardPaths::GenericCacheLocation) + QStringLiteral("/unity8/");
-    m_db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"));
+    m_db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("WindowStateStorageMain"));
     QDir dir;
     dir.mkpath(dbPath);
     m_db.setDatabaseName(dbPath + "windowstatestorage.sqlite");
@@ -52,6 +52,7 @@ WindowStateStorage::~WindowStateStorage()
     }
     futureSync.waitForFinished();
     m_db.close();
+    QSqlDatabase::removeDatabase(QStringLiteral("WindowStateStorageMain"));
 }
 
 void WindowStateStorage::saveState(const QString &windowId, WindowStateStorage::WindowState state)
@@ -110,17 +111,24 @@ int WindowStateStorage::getStage(const QString &appId, int defaultValue) const
     return query.value("stage").toInt();
 }
 
-void WindowStateStorage::executeAsyncQuery(const QString &queryString)
+void WindowStateStorage::executeAsyncQuery(const QString &queryString, const QString &dbPath)
 {
-    QMutexLocker l(&s_mutex);
-    QSqlQuery query;
+    {
+        QSqlDatabase connection = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("WindowStateStorageOther"));
+        connection.setDatabaseName(dbPath);
+        connection.open();
+        QMutexLocker l(&s_mutex);
+        QSqlQuery query(connection);
 
-    bool ok = query.exec(queryString);
-    if (!ok) {
-        qWarning() << "Error executing query" << queryString
-                   << "Driver error:" << query.lastError().driverText()
-                   << "Database error:" << query.lastError().databaseText();
+        bool ok = query.exec(queryString);
+        if (!ok) {
+            qWarning() << "Error executing query" << queryString
+                    << "Driver error:" << query.lastError().driverText()
+                    << "Database error:" << query.lastError().databaseText();
+        }
+        connection.close();
     }
+    QSqlDatabase::removeDatabase(QStringLiteral("WindowStateStorageOther"));
 }
 
 QRect WindowStateStorage::getGeometry(const QString &windowId, const QRect &defaultValue) const
@@ -172,7 +180,7 @@ void WindowStateStorage::saveValue(const QString &queryString)
 {
     QMutexLocker mutexLocker(&s_mutex);
 
-    QFuture<void> future = QtConcurrent::run(&m_threadPool, executeAsyncQuery, queryString);
+    QFuture<void> future = QtConcurrent::run(&m_threadPool, executeAsyncQuery, queryString, m_db.databaseName());
     m_asyncQueries.append(future);
 
     QFutureWatcher<void> *futureWatcher = new QFutureWatcher<void>();
@@ -186,7 +194,7 @@ void WindowStateStorage::saveValue(const QString &queryString)
 QSqlQuery WindowStateStorage::getValue(const QString &queryString) const
 {
     QMutexLocker l(&s_mutex);
-    QSqlQuery query;
+    QSqlQuery query(m_db);
 
     bool ok = query.exec(queryString);
     if (!ok) {
