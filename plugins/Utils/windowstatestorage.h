@@ -15,8 +15,6 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <memory>
-
 #include <QObject>
 #include <QSqlDatabase>
 #include <QSqlQuery>
@@ -35,14 +33,21 @@ public:
     AsyncQuery(const QString& dbName);
     ~AsyncQuery();
 
-private:
-    void initdb(const QString &connectionName);
+    Q_PROPERTY (const QString dbName READ getDbName)
+
+    Q_INVOKABLE const QString getDbName();
+    Q_INVOKABLE bool initdb();
+
+Q_SIGNALS:
+    void readyChanged();
 
 public Q_SLOTS:
     QSqlQuery execute(const QString& queryString);
 
 private:
     const QString m_connectionName = QStringLiteral("WindowStateStorage");
+    void logSqlError(const QSqlQuery);
+    QString m_dbName;
 };
 
 class WindowStateStorage: public QObject
@@ -82,6 +87,10 @@ public:
 
     Q_INVOKABLE Mir::State toMirState(WindowState state) const;
 
+    Q_PROPERTY (const QString dbName READ getDbName)
+
+    const QString getDbName();
+
 Q_SIGNALS:
     void executeAsyncQuery(const QString &queryString);
 
@@ -90,5 +99,5 @@ private:
 
     QThread m_thread;
 
-    std::shared_ptr<AsyncQuery> m_asyncQuery;
+    AsyncQuery *m_asyncQuery;
 };

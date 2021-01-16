@@ -38,6 +38,10 @@ private Q_SLOTS:
         delete storage;
     }
 
+    void testDbNameSanity() {
+        QCOMPARE(storage->getDbName(), QStringLiteral(":memory:"));
+    }
+
     void testSaveRestoreState() {
         const WindowStateStorage::WindowState state{WindowStateStorage::WindowState::WindowStateMaximizedTopLeft};
         storage->saveState(QTest::currentTestFunction(), state);
