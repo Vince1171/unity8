@@ -1,5 +1,6 @@
 /*
  * Copyright 2015-2016 Canonical Ltd.
+ * Copyright 2021 UBports Foundation
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU Lesser General Public License as published by
@@ -14,14 +15,35 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <memory>
+
 #include <QObject>
 #include <QSqlDatabase>
+#include <QSqlQuery>
 #include <QMutex>
 #include <QFuture>
 #include <QThread>
 
 // unity-api
 #include <unity/shell/application/Mir.h>
+
+class AsyncQuery: public QObject
+{
+    Q_OBJECT
+
+public:
+    AsyncQuery(const QString& dbName);
+    ~AsyncQuery();
+
+private:
+    void initdb(const QString &connectionName);
+
+public Q_SLOTS:
+    QSqlQuery execute(const QString& queryString);
+
+private:
+    const QString m_connectionName = QStringLiteral("WindowStateStorage");
+};
 
 class WindowStateStorage: public QObject
 {
@@ -68,5 +90,5 @@ private:
 
     QThread m_thread;
 
-    void *m_asyncQuery;
+    std::shared_ptr<AsyncQuery> m_asyncQuery;
 };

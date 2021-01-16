@@ -1,5 +1,6 @@
 /*
  * Copyright 2015-2016 Canonical Ltd.
+ * Copyright 2021 UBports Foundation
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU Lesser General Public License as published by
@@ -33,78 +34,68 @@ inline QString sanitiseString(QString string) {
                  .remove(QLatin1Char('\\'));
 }
 
-class AsyncQuery: public QObject
+AsyncQuery::AsyncQuery(const QString& dbName)
 {
-    Q_OBJECT
-
-public:
-    AsyncQuery(const QString& dbName)
-    {
-        m_db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("WindowStateStorageMain"));
-        if (dbName == nullptr) {
-            const QString dbPath = QStandardPaths::writableLocation(QStandardPaths::GenericCacheLocation) + QStringLiteral("/unity8/");
-            QDir dir;
-            dir.mkpath(dbPath);
-            m_db.setDatabaseName(dbPath + "windowstatestorage.sqlite");
-        } else {
-          m_db.setDatabaseName(dbName);
-        }
-
-        initdb();
+    QSqlDatabase connection = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), m_connectionName);
+    if (dbName == nullptr) {
+        const QString dbPath = QStandardPaths::writableLocation(QStandardPaths::GenericCacheLocation) + QStringLiteral("/unity8/");
+        QDir dir;
+        dir.mkpath(dbPath);
+        connection.setDatabaseName(dbPath + "windowstatestorage.sqlite");
+    } else {
+        connection.setDatabaseName(dbName);
     }
 
-    ~AsyncQuery()
-    {
-        QSqlDatabase::removeDatabase(QStringLiteral("WindowStateStorageMain"));
+    initdb(m_connectionName);
+}
+
+AsyncQuery::~AsyncQuery()
+{
+    QSqlDatabase::removeDatabase(m_connectionName);
+}
+
+void AsyncQuery::initdb(const QString &connectionName)
+{
+    QSqlDatabase connection = QSqlDatabase::database(connectionName);
+    if (!connection.isOpen()) {
+        qWarning() << "Error opening state database:" << connection.lastError().driverText() << connection.lastError().databaseText();
+        return;
     }
 
-private:
-    void initdb()
-    {
-        m_db.open();
-        if (!m_db.open()) {
-            qWarning() << "Error opening state database:" << m_db.lastError().driverText() << m_db.lastError().databaseText();
-            return;
-        }
-
-        if (!m_db.tables().contains(QStringLiteral("geometry"))) {
-            QSqlQuery query;
-            query.exec(QStringLiteral("CREATE TABLE geometry(windowId TEXT UNIQUE, x INTEGER, y INTEGER, width INTEGER, height INTEGER);"));
-        }
-
-        if (!m_db.tables().contains(QStringLiteral("state"))) {
-            QSqlQuery query;
-            query.exec(QStringLiteral("CREATE TABLE state(windowId TEXT UNIQUE, state INTEGER);"));
-        }
-
-        if (!m_db.tables().contains(QStringLiteral("stage"))) {
-            QSqlQuery query;
-            query.exec(QStringLiteral("CREATE TABLE stage(appId TEXT UNIQUE, stage INTEGER);"));
-        }
+    if (!connection.tables().contains(QStringLiteral("geometry"))) {
+        QSqlQuery query(connection);
+        query.exec(QStringLiteral("CREATE TABLE geometry(windowId TEXT UNIQUE, x INTEGER, y INTEGER, width INTEGER, height INTEGER);"));
     }
 
-public Q_SLOTS:
-    QSqlQuery execute(const QString& queryString)
-    {
-        QSqlQuery query(m_db);
-        auto ok = query.exec(queryString);
-        if (!ok) {
-          qWarning() << "Error executing query" << queryString
-                     << "Driver error:" << query.lastError().driverText()
-                     << "Database error:" << query.lastError().databaseText();
-        }
-        return query;
+    if (!connection.tables().contains(QStringLiteral("state"))) {
+        QSqlQuery query(connection);
+        query.exec(QStringLiteral("CREATE TABLE state(windowId TEXT UNIQUE, state INTEGER);"));
     }
 
-private:
-    QSqlDatabase m_db;
-};
+    if (!connection.tables().contains(QStringLiteral("stage"))) {
+        QSqlQuery query(connection);
+        query.exec(QStringLiteral("CREATE TABLE stage(appId TEXT UNIQUE, stage INTEGER);"));
+    }
+}
+
+QSqlQuery AsyncQuery::execute(const QString& queryString)
+{
+    QSqlDatabase connection = QSqlDatabase::database(m_connectionName);
+    QSqlQuery query(connection);
+    auto ok = query.exec(queryString);
+    if (!ok) {
+        qWarning() << "Error executing query" << queryString
+                    << "Driver error:" << query.lastError().driverText()
+                    << "Database error:" << query.lastError().databaseText();
+    }
+    return query;
+}
 
 WindowStateStorage::WindowStateStorage(const QString& dbName, QObject *parent):
     QObject(parent)
 {
-    m_asyncQuery = new AsyncQuery(dbName);
-    connect(this, &WindowStateStorage::executeAsyncQuery, static_cast<AsyncQuery*>(m_asyncQuery), &AsyncQuery::execute);
+    m_asyncQuery = std::make_shared<AsyncQuery> (dbName);
+    connect(this, &WindowStateStorage::executeAsyncQuery, m_asyncQuery.get(), &AsyncQuery::execute);
 }
 
 WindowStateStorage::~WindowStateStorage()
@@ -193,7 +184,7 @@ QRect WindowStateStorage::getGeometry(const QString &windowId, const QRect &defa
 QSqlQuery WindowStateStorage::getValue(const QString &queryString) const
 {
    QSqlQuery query;
-   QMetaObject::invokeMethod(static_cast<AsyncQuery*>(m_asyncQuery), "execute", Qt::DirectConnection,
+   QMetaObject::invokeMethod(m_asyncQuery.get(), "execute", Qt::DirectConnection,
                              Q_RETURN_ARG(QSqlQuery, query),
                              Q_ARG(const QString&, queryString)
                              );
