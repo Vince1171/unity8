@@ -69,6 +69,22 @@ private Q_SLOTS:
         QCOMPARE(loadedGeometry, defaultGeometry);
     }
 
+    void testProtectAgainstSqlInjection() {
+        const int stage{1};
+        QString naughtyAppId = QStringLiteral("stageQuery;DROP TABLE stage");
+        QString naughtyAppIdSingleQuotes = QStringLiteral("stageQuery';DROP TABLE stage");
+        QString naughtyAppIdDoubleQuotes = QStringLiteral("stageQuery\";DROP TABLE stage");
+        QString naughtyAppIdBackslashes = QStringLiteral("stageQuery\\\";DROP TABLE stage");
+        storage->saveStage(naughtyAppId, stage);
+        QTRY_COMPARE(storage->getStage(naughtyAppId, 0), stage);
+        storage->saveStage(naughtyAppIdSingleQuotes, stage);
+        QTRY_COMPARE(storage->getStage(naughtyAppIdSingleQuotes, 0), stage);
+        storage->saveStage(naughtyAppIdDoubleQuotes, stage);
+        QTRY_COMPARE(storage->getStage(naughtyAppIdDoubleQuotes, 0), stage);
+        storage->saveStage(naughtyAppIdBackslashes, stage);
+        QTRY_COMPARE(storage->getStage(naughtyAppIdBackslashes, 0), stage);
+    }
+
 private:
     WindowStateStorage * storage{nullptr};
 };
