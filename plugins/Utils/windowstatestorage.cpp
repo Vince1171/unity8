@@ -28,12 +28,6 @@
 #include <QRect>
 #include <unity/shell/application/ApplicationInfoInterface.h>
 
-inline QString sanitiseString(QString string) {
-    return string.remove(QLatin1Char('\"'))
-                 .remove(QLatin1Char('\''))
-                 .remove(QLatin1Char('\\'));
-}
-
 AsyncQuery::AsyncQuery(const QString& dbName)
 {
     if (dbName == nullptr) {
@@ -87,7 +81,134 @@ bool AsyncQuery::initdb()
     return true;
 }
 
-void AsyncQuery::logSqlError(const QSqlQuery query)
+void AsyncQuery::saveState(const QString &windowId, int state)
+{
+    QSqlDatabase connection = QSqlDatabase::database(m_connectionName);
+    QSqlQuery query(connection);
+    query.prepare(m_saveStateQuery);
+    query.bindValue(":windowId", windowId);
+    query.bindValue(":state", state);
+    if (!query.exec()) {
+        logSqlError(query);
+    }
+}
+
+int AsyncQuery::getState(const QString &windowId) const
+{
+    QSqlDatabase connection = QSqlDatabase::database(m_connectionName);
+    QSqlQuery query(connection);
+    query.prepare(m_getStateQuery);
+    query.bindValue(":windowId", windowId);
+    query.exec();
+    if (!query.isActive() || !query.isSelect()) {
+        logSqlError(query);
+        return -1;
+    }
+    if (!query.first()) {
+        return -1;
+    }
+    bool converted = false;
+    QVariant resultStr = query.value(0);
+    int result = resultStr.toInt(&converted);
+    if (converted) {
+        return result;
+    } else {
+        qWarning() << "getState result expected integer, got " << resultStr;
+        return -1;
+    }
+}
+
+void AsyncQuery::saveGeometry(const QString &windowId, const QRect &rect)
+{
+    QSqlDatabase connection = QSqlDatabase::database(m_connectionName);
+    QSqlQuery query(connection);
+    query.prepare(m_saveGeometryQuery);
+    query.bindValue(":windowId", windowId);
+    query.bindValue(":x", rect.x());
+    query.bindValue(":y", rect.y());
+    query.bindValue(":width", rect.width());
+    query.bindValue(":height", rect.height());
+    if (!query.exec()) {
+        logSqlError(query);
+    }
+}
+
+QRect AsyncQuery::getGeometry(const QString &windowId) const
+{
+    QSqlDatabase connection = QSqlDatabase::database(m_connectionName);
+    QSqlQuery query(connection);
+    query.prepare(m_getGeometryQuery);
+    query.bindValue(":windowId", windowId);
+    query.exec();
+    if (!query.isActive() || !query.isSelect()) {
+        logSqlError(query);
+        return QRect();
+    }
+
+    if (!query.first()) {
+        return QRect();
+    }
+
+    bool xConverted, yConverted, widthConverted, heightConverted = false;
+    int x, y, width, height;
+    QVariant xResultStr = query.value(QStringLiteral("x"));
+    QVariant yResultStr = query.value(QStringLiteral("y"));
+    QVariant widthResultStr = query.value(QStringLiteral("width"));
+    QVariant heightResultStr = query.value(QStringLiteral("height"));
+    x = xResultStr.toInt(&xConverted);
+    y = yResultStr.toInt(&yConverted);
+    width = widthResultStr.toInt(&widthConverted);
+    height = heightResultStr.toInt(&heightConverted);
+
+    if (xConverted  && yConverted && widthConverted && heightConverted) {
+        return QRect(x, y, width, height);
+    } else {
+        qWarning() << "getGeometry result expected integers, got x:"
+                << xResultStr << "y:" << yResultStr << "width" << widthResultStr
+                << "height:" << heightResultStr;
+        return QRect();
+    }
+
+}
+
+void AsyncQuery::saveStage(const QString &appId, int stage)
+{
+    QSqlDatabase connection = QSqlDatabase::database(m_connectionName);
+    QSqlQuery query(connection);
+    query.prepare(m_saveStageQuery);
+    query.bindValue(":appId", appId);
+    query.bindValue(":stage", stage);
+    if (!query.exec()) {
+        logSqlError(query);
+    }
+}
+
+int AsyncQuery::getStage(const QString &appId) const
+{
+    QSqlDatabase connection = QSqlDatabase::database(m_connectionName);
+    QSqlQuery query(connection);
+    query.prepare(m_getStageQuery);
+    query.bindValue(":appId", appId);
+    query.exec();
+    if (!query.isActive() || !query.isSelect()) {
+        logSqlError(query);
+        return -1;
+    }
+    if (!query.first()) {
+        return -1;
+    }
+    bool converted = false;
+    QVariant resultStr = query.value(0);
+    int result = resultStr.toInt(&converted);
+    if (converted) {
+        return result;
+    } else {
+        qWarning() << "getStage result expected integer, got " << resultStr;
+        return -1;
+    }
+}
+
+void AsyncQuery::logSqlError(const QSqlQuery query) const
 {
     qWarning() << "Error executing query" << query.lastQuery()
                << "Driver error:" << query.lastError().driverText()
@@ -100,17 +221,6 @@ const QString AsyncQuery::getDbName()
     return connection.databaseName();
 }
 
-QSqlQuery AsyncQuery::execute(const QString& queryString)
-{
-    QSqlDatabase connection = QSqlDatabase::database(m_connectionName);
-    QSqlQuery query(connection);
-    auto ok = query.exec(queryString);
-    if (!ok) {
-        logSqlError(query);
-    }
-    return query;
-}
-
 WindowStateStorage::WindowStateStorage(const QString& dbName, QObject *parent):
     QObject(parent),
     m_thread()
@@ -118,7 +228,8 @@ WindowStateStorage::WindowStateStorage(const QString& dbName, QObject *parent):
     m_asyncQuery = new AsyncQuery(dbName);
     m_asyncQuery->moveToThread(&m_thread);
     connect(&m_thread, &QThread::finished, m_asyncQuery, &QObject::deleteLater);
-    connect(this, &WindowStateStorage::executeAsyncQuery, m_asyncQuery, &AsyncQuery::execute);
+    connect(this, &WindowStateStorage::saveGeometry, m_asyncQuery, &AsyncQuery::saveGeometry);
+    connect(this, &WindowStateStorage::saveStage, m_asyncQuery, &AsyncQuery::saveStage);
     m_thread.start();
     bool queryInitSuccessful;
     QMetaObject::invokeMethod(m_asyncQuery, "initdb",
@@ -135,91 +246,60 @@ WindowStateStorage::~WindowStateStorage()
     m_thread.wait();
 }
 
-void WindowStateStorage::saveState(const QString &windowId, WindowStateStorage::WindowState state)
+void WindowStateStorage::saveState(const QString &windowId, WindowStateStorage::WindowState windowState)
 {
-    const QString queryString = QStringLiteral("INSERT OR REPLACE INTO state (windowId, state) values ('%1', '%2');")
-            .arg(sanitiseString(windowId))
-            .arg((int)state);
-
-    executeAsyncQuery(queryString);
+    // This could be a simple connection like all the other save* methods
+    // on AsyncQuery, but WindowStateStorage::WindowState can't be used
+    // on it directly.
+    QMetaObject::invokeMethod(m_asyncQuery, "saveState", Qt::QueuedConnection,
+                        Q_ARG(const QString&, windowId),
+                        Q_ARG(int, (int)windowState)
+                        );
 }
 
 WindowStateStorage::WindowState WindowStateStorage::getState(const QString &windowId, WindowStateStorage::WindowState defaultValue) const
 {
-    const QString queryString = QStringLiteral("SELECT state FROM state WHERE windowId = '%1';")
-            .arg(sanitiseString(windowId));
+    int state;
 
-    QSqlQuery query = getValue(queryString);
+    QMetaObject::invokeMethod(m_asyncQuery, "getState", Qt::BlockingQueuedConnection,
+                            Q_RETURN_ARG(int, state),
+                            Q_ARG(const QString&, windowId)
+                            );
 
-    if (!query.first()) {
+    if (state == -1) {
         return defaultValue;
     }
-    return (WindowState)query.value(QStringLiteral("state")).toInt();
-}
 
-void WindowStateStorage::saveGeometry(const QString &windowId, const QRect &rect)
-{
-    const QString queryString = QStringLiteral("INSERT OR REPLACE INTO geometry (windowId, x, y, width, height) values ('%1', '%2', '%3', '%4', '%5');")
-            .arg(sanitiseString(windowId))
-            .arg(rect.x())
-            .arg(rect.y())
-            .arg(rect.width())
-            .arg(rect.height());
-
-    executeAsyncQuery(queryString);
-}
-
-void WindowStateStorage::saveStage(const QString &appId, int stage)
-{
-    const QString queryString = QStringLiteral("INSERT OR REPLACE INTO stage (appId, stage) values ('%1', '%2');")
-            .arg(sanitiseString(appId))
-            .arg(stage);
-
-    executeAsyncQuery(queryString);
+    return (WindowState)state;
 }
 
 int WindowStateStorage::getStage(const QString &appId, int defaultValue) const
 {
-    const QString queryString = QStringLiteral("SELECT stage FROM stage WHERE appId = '%1';")
-            .arg(sanitiseString(appId));
+    int stage;
 
-    QSqlQuery query = getValue(queryString);
+    QMetaObject::invokeMethod(m_asyncQuery, "getStage", Qt::BlockingQueuedConnection,
+                            Q_RETURN_ARG(int, stage),
+                            Q_ARG(const QString&, appId)
+                            );
 
-    if (!query.first()) {
+    if (stage == -1) {
         return defaultValue;
     }
-    return query.value("stage").toInt();
+
+    return stage;
 }
 
 QRect WindowStateStorage::getGeometry(const QString &windowId, const QRect &defaultValue) const
 {
-    QString queryString = QStringLiteral("SELECT * FROM geometry WHERE windowId = '%1';")
-            .arg(sanitiseString(windowId));
-
-    QSqlQuery query = getValue(queryString);
-
-    if (!query.first()) {
+    QRect geometry;
+    QMetaObject::invokeMethod(m_asyncQuery, "getGeometry", Qt::BlockingQueuedConnection,
+                            Q_RETURN_ARG(QRect, geometry),
+                            Q_ARG(const QString&, windowId)
+                            );
+    if (geometry.isNull() || !geometry.isValid()) {
         return defaultValue;
     }
-
-    const QRect result(query.value(QStringLiteral("x")).toInt(), query.value(QStringLiteral("y")).toInt(),
-                       query.value(QStringLiteral("width")).toInt(), query.value(QStringLiteral("height")).toInt());
-
-    if (result.isValid()) {
-        return result;
-    }
-
-    return defaultValue;
-}
-
-QSqlQuery WindowStateStorage::getValue(const QString &queryString) const
-{
-   QSqlQuery query;
-   QMetaObject::invokeMethod(m_asyncQuery, "execute", Qt::BlockingQueuedConnection,
-                             Q_RETURN_ARG(QSqlQuery, query),
-                             Q_ARG(const QString&, queryString)
-                             );
-    return query;
+    return geometry;
 }
 
 const QString WindowStateStorage::getDbName()
