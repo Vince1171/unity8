@@ -142,7 +142,7 @@ Rectangle {
                     Component.onDestruction: {
                         shellLoader.itemDestroyed = true;
                     }
-                    lightIndicators: false
+                    lightIndicators: true
                 }
             }
         }
