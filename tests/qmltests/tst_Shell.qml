@@ -142,6 +142,7 @@ Rectangle {
                     Component.onDestruction: {
                         shellLoader.itemDestroyed = true;
                     }
+                    lightIndicators: false
                 }
             }
         }
@@ -671,6 +672,7 @@ Rectangle {
 
             GSettingsController.setLifecycleExemptAppids([]);
             GSettingsController.setPictureUri("");
+            wait(100);
         }
 
         function ensureInputMethodSurface() {
