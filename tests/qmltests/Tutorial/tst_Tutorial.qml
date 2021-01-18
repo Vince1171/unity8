@@ -150,6 +150,7 @@ Rectangle {
                         primary: shellLoader.primaryOrientation
                     }
                     hasTouchscreen: true
+                    lightIndicators: true
 
                     Component.onDestruction: {
                         shellLoader.itemDestroyed = true;
@@ -292,6 +293,7 @@ Rectangle {
             // iteration to do its work. So to ensure the reload, we will wait until the
             // Shell instance gets destroyed.
             tryCompare(shellLoader, "itemDestroyed", true);
+            wait(100);
 
             // kill all (fake) running apps
             killApps();
